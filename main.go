@@ -41,5 +41,5 @@ func main() {
 	if err := packer.Write(); err != nil {
 		panic(err)
 	}
-	log.Printf("Packed files from %s to %s", config.SourcePath, config.OutputPath)
+	log.Printf("Packed %d files from %s to %s", packer.Count(), config.SourcePath, config.OutputPath)
 }
