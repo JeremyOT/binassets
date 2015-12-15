@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"path"
 	"strings"
@@ -42,7 +43,7 @@ type asset struct {
 	assetCollection *AssetCollection
 }
 
-func (a *asset) Stat() (*asset, error) {
+func (a *asset) Stat() (os.FileInfo, error) {
 	return a, nil
 }
 
@@ -158,17 +159,17 @@ func (c *AssetCollection) Decrypt(key []byte) (err error) {
 }
 
 // Open implements http.FileSystem.Open()
-func (c *AssetCollection) Open(path string) (a *asset, err error) {
-	data, ok := (*c)[path]
+func (c AssetCollection) Open(path string) (a http.File, err error) {
+	data, ok := c[path]
 	if ok {
-		return &asset{data: data, path: path, assetCollection: c}, nil
+		return &asset{data: data, path: path, assetCollection: &c}, nil
 	}
 	if len(path) == 0 {
 		return nil, os.ErrNotExist
 	}
 	basePath := strings.Split(path, "/")
 FindDir:
-	for k := range *c {
+	for k := range c {
 		components := strings.Split(k, "/")
 		if len(components) != len(basePath)+1 {
 			continue
@@ -178,7 +179,7 @@ FindDir:
 				continue FindDir
 			}
 		}
-		return &asset{data: nil, path: path, assetCollection: c}, nil
+		return &asset{data: nil, path: path, assetCollection: &c}, nil
 	}
 	return nil, os.ErrNotExist
 }
@@ -195,7 +196,7 @@ func New(config Config) *Packer {
 		config.AssetCollection = "Assets"
 	}
 	if config.BinAssetsPackage == "" {
-		config.BinAssetsPackage = "github.com/JeremyOT/binassets"
+		config.BinAssetsPackage = "github.com/JeremyOT/binassets/binassets"
 	}
 	return &Packer{config: config, data: AssetCollection{}}
 }
@@ -289,13 +290,16 @@ func (p *Packer) packFile(file os.FileInfo, prefix, root string) (err error) {
 // Pack creates a packed .go file based on the assets and options specified in config.
 func (p *Packer) Pack() (err error) {
 	root, err := os.Stat(p.config.SourcePath)
+	if err != nil {
+		return err
+	}
 	if root.IsDir() {
-		err = p.packFile(root, "/", p.config.SourcePath)
+		err = p.packFile(root, "/", path.Dir(p.config.SourcePath))
 		if err != nil {
 			return
 		}
 	}
-	err = p.packFile(root, "", p.config.SourcePath)
+	err = p.packFile(root, "", path.Dir(p.config.SourcePath))
 	if err != nil {
 		return
 	}
@@ -310,19 +314,15 @@ func (p *Packer) Write() (err error) {
 	if err != nil {
 		return err
 	}
-	if _, err = output.WriteString(fmt.Sprintf("package %s\n\nimport (\n  \"%s\"\n)\n\nvar %s := binassets.AssetCollection{\n", p.config.Package, p.config.BinAssetsPackage, p.config.AssetCollection)); err != nil {
+	serverImport := ""
+	if p.config.Package == "main" {
+		serverImport = "\n  \"net/http\"\n  \"flag\"\n  \"log\"\n  \"fmt\""
+	}
+	if _, err = output.WriteString(fmt.Sprintf("package %s\n\nimport (\n  \"%s\"%s\n)\n\nvar %s = binassets.AssetCollection{\n", p.config.Package, p.config.BinAssetsPackage, serverImport, p.config.AssetCollection)); err != nil {
 		return
 	}
-	var firstRow = true
 	for path, data := range p.data {
-		if firstRow {
-			firstRow = false
-		} else {
-			if _, err = output.WriteString(",\n"); err != nil {
-				return
-			}
-		}
-		if _, err = output.WriteString("\"" + path + "\": \""); err != nil {
+		if _, err = output.WriteString("  \"" + path + "\": []byte(\""); err != nil {
 			return
 		}
 		h := hex.EncodeToString(data)
@@ -331,12 +331,25 @@ func (p *Packer) Write() (err error) {
 				return
 			}
 		}
-		if _, err = output.WriteString("\""); err != nil {
+		if _, err = output.WriteString("\"),\n"); err != nil {
 			return
 		}
 	}
 	if _, err = output.WriteString("\n}\n"); err != nil {
 		return
+	}
+	if p.config.Package == "main" {
+		if _, err = output.WriteString(fmt.Sprintf("func main(){\n"+
+			"  var port int\n"+
+			"  flag.IntVar(&port, \"port\", 80, \"The port to bind to\")\n"+
+			"  flag.Parse()\n"+
+			"  s := &http.Server{\n"+
+			"    Addr:           fmt.Sprintf(\":%%d\", port),\n"+
+			"    Handler:        http.FileServer(%s),\n"+
+			"  }\n"+
+			"  log.Fatal(s.ListenAndServe())\n}\n", p.config.AssetCollection)); err != nil {
+			return
+		}
 	}
 	return
 }
