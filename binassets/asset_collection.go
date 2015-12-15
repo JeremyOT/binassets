@@ -90,14 +90,14 @@ func (a *asset) Readdir(count int) (files []os.FileInfo, err error) {
 		a.readDirOffset = 0
 		return
 	}
-	basePath := strings.Split(a.path, "/")
+	basePath := pathComponents(a.path)
 	dirs := map[string]struct{}{}
 FindDirs:
 	for k, v := range *a.assetCollection {
 		if k == a.path || !strings.HasPrefix(k, a.path) {
 			continue
 		}
-		components := strings.Split(k, "/")
+		components := pathComponents(k)
 		for i, c := range basePath {
 			if c != components[i] {
 				continue FindDirs
@@ -143,24 +143,32 @@ func (c *AssetCollection) Decrypt(key []byte) (err error) {
 	return
 }
 
+func pathComponents(p string) (output []string) {
+	components := strings.Split(p, "/")
+	output = make([]string, 0, len(components))
+	for _, c := range components {
+		if c != "" {
+			output = append(output, c)
+		}
+	}
+	return
+}
+
 // Open implements http.FileSystem.Open()
 func (c AssetCollection) Open(path string) (a http.File, err error) {
 	data, ok := c[path]
 	if ok {
 		return &asset{data: data, path: path, assetCollection: &c}, nil
 	}
-	if len(path) == 0 {
-		return nil, os.ErrNotExist
-	}
-	basePath := strings.Split(path, "/")
+	basePath := pathComponents(path)
 FindDir:
 	for k := range c {
-		components := strings.Split(k, "/")
-		if len(components) != len(basePath)+1 {
+		components := pathComponents(k)
+		if len(components) <= len(basePath) {
 			continue
 		}
-		for i, c := range basePath {
-			if components[i] != c {
+		for i, seg := range basePath {
+			if components[i] != seg {
 				continue FindDir
 			}
 		}
